@@ -1602,6 +1602,10 @@ FP_ASM_SPEC "\
 /* Width of a MSA vector register in bits.  */
 #define BITS_PER_MSA_REG (UNITS_PER_MSA_REG * BITS_PER_UNIT)
 
+/* The R5900 has 128-bit registers.  */
+#define MAX_UNITS_PER_WORD_R5900 16
+#define MAX_BITS_PER_WORD_R5900 128
+
 /* For MIPS, width of a floating point register.  */
 #define UNITS_PER_FPREG (TARGET_FLOAT64 ? 8 : 4)
 
@@ -2434,6 +2438,12 @@ enum reg_class
    && GET_MODE_SIZE (MODE) == UNITS_PER_MSA_REG		\
    && (GET_MODE_CLASS (MODE) == MODE_VECTOR_INT		\
        || GET_MODE_CLASS (MODE) == MODE_VECTOR_FLOAT))
+
+/* True if MODE is vector and supported in a MSA vector register.  */
+#define R5900_MMI_SUPPORTED_MODE_P(MODE)   \
+  (TARGET_MIPS5900         \
+   && GET_MODE_SIZE (MODE) == MAX_UNITS_PER_WORD_R5900 \
+   && GET_MODE_CLASS (MODE) == MODE_VECTOR_INT)
 
 /* Temporary register that is used when restoring $gp after a call.  $4 and $5
    are used for returning complex double values in soft-float code, so $6 is the

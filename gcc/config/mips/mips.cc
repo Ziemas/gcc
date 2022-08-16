@@ -2673,6 +2673,8 @@ mips_lx_address_p (rtx addr, machine_mode mode)
     return true;
   if (MSA_SUPPORTED_MODE_P (mode))
     return true;
+  if (R5900_MMI_SUPPORTED_MODE_P (mode))
+    return true;
   return false;
 }
 
@@ -4778,6 +4780,42 @@ mips_split_move_p (rtx dest, rtx src, enum mips_split_type split_type)
   if (MSA_SUPPORTED_MODE_P (GET_MODE (dest)))
     return mips_split_128bit_move_p (dest, src);
 
+  /* Check r5900 MMI destinations.  */
+  if (R5900_MMI_SUPPORTED_MODE_P (GET_MODE (dest))
+      && GP_REG_P (REGNO (dest)))
+    {
+      /* Check for LQ loads.  */
+      if (MEM_P (src))
+        return false;
+      /* Check for LO register.  */
+      if (REGNO (src) == LO_REGNUM)
+        return false;
+      /* Check for HI register.  */
+      if (REGNO (src) == HI_REGNUM)
+        return false;
+      /* GPR-to-GPR moves can be done in a single instruction.  */
+      if (GP_REG_P (REGNO (src)))
+        return false;
+    }
+
+  /* Check r5900 MMI sources.  */
+  if (R5900_MMI_SUPPORTED_MODE_P (GET_MODE (src))
+      && GP_REG_P (REGNO (src)))
+    {
+      /* Check for SQ loads.  */
+      if (MEM_P (dest))
+        return false;
+      /* Check for LO register.  */
+      if (REGNO (dest) == LO_REGNUM)
+        return false;
+      /* Check for HI register.  */
+      if (REGNO (dest) == HI_REGNUM)
+        return false;
+      /* GPR-to-GPR moves can be done in a single instruction.  */
+      if (GP_REG_P (REGNO (dest)))
+        return false;
+    }
+
   /* Otherwise split all multiword moves.  */
   return size > UNITS_PER_WORD;
 }
@@ -4794,6 +4832,8 @@ mips_split_move (rtx dest, rtx src, enum mips_split_type split_type, rtx insn_)
   gcc_checking_assert (mips_split_move_p (dest, src, split_type));
   if (MSA_SUPPORTED_MODE_P (GET_MODE (dest)))
     mips_split_128bit_move (dest, src);
+//  else if (R5900_MMI_SUPPORTED_MODE_P (GET_MODE (dest)))
+//    // TODO!
   else if (FP_REG_RTX_P (dest) || FP_REG_RTX_P (src))
     {
       if (!TARGET_64BIT && GET_MODE (dest) == DImode)
@@ -5183,6 +5223,7 @@ mips_output_move (rtx dest, rtx src)
 	  case 2: return "sh\t%z1,%0";
 	  case 4: return "sw\t%z1,%0";
 	  case 8: return "sd\t%z1,%0";
+	  case 16: return "sq\t%z1,%0";
 	  default: gcc_unreachable ();
 	  }
     }
@@ -5233,6 +5274,7 @@ mips_output_move (rtx dest, rtx src)
 	  case 2: return "lhu\t%0,%1";
 	  case 4: return "lw\t%0,%1";
 	  case 8: return "ld\t%0,%1";
+	  case 16: return "lq\t%0,%1";
 	  default: gcc_unreachable ();
 	  }
 
@@ -5847,6 +5889,9 @@ mips_get_arg_info (struct mips_arg_info *info, const CUMULATIVE_ARGS *cum,
 
   /* Work out the size of the argument.  */
   num_bytes = type ? int_size_in_bytes (type) : GET_MODE_SIZE (mode);
+  if (TARGET_MIPS5900)
+    num_words = (num_bytes + MAX_UNITS_PER_WORD_R5900 - 1) / MAX_UNITS_PER_WORD_R5900;
+  else
   num_words = (num_bytes + UNITS_PER_WORD - 1) / UNITS_PER_WORD;
 
   /* Decide whether it should go in a floating-point register, assuming
@@ -5924,6 +5969,10 @@ mips_get_arg_info (struct mips_arg_info *info, const CUMULATIVE_ARGS *cum,
     }
 
   /* See whether the argument has doubleword alignment.  */
+  if (TARGET_MIPS5900)
+    doubleword_aligned_p = (mips_function_arg_boundary (mode, type)
+			    > MAX_BITS_PER_WORD_R5900);
+  else
   doubleword_aligned_p = (mips_function_arg_boundary (mode, type)
 			  > BITS_PER_WORD);
 
@@ -6287,6 +6336,13 @@ mips_pass_by_reference (cumulative_args_t, const function_arg_info &arg)
 	  || arg.mode == DQmode || arg.mode == UDQmode
 	  || arg.mode == DAmode || arg.mode == UDAmode)
 	return 0;
+
+      /* The R5900's registers are large enough to pass arguments in these modes.  */
+      if (TARGET_MIPS5900
+    && (arg.mode == V4SImode
+        || arg.mode == V8HImode
+        || arg.mode == V16QImode))
+  return 0;
 
       size = arg.type_size_in_bytes ();
       return size == -1 || size > UNITS_PER_WORD;
@@ -8158,6 +8214,18 @@ mips_block_move_straight (rtx dest, rtx src, HOST_WIDE_INT length)
   machine_mode mode;
   rtx *regs;
 
+  /* The R5900 has quad-word loads and stores, but they will only work 
+     if the data is aligned to at least 128-bit boundaries.  */
+  if (TARGET_MIPS5900
+      && ((MEM_ALIGN (src) >= MAX_BITS_PER_WORD_R5900)
+      && (MEM_ALIGN (dest) >= MAX_BITS_PER_WORD_R5900)))
+    {
+       bits = MAX_BITS_PER_WORD_R5900;
+       mode = int_mode_for_size (bits, 0).require ();
+       delta = bits / BITS_PER_UNIT;
+    }
+  else
+    {
   /* Work out how many bits to move at a time.  If both operands have
      half-word alignment, it is usually better to move in half words.
      For instance, lh/lh/sh/sh is usually better than lwl/lwr/swl/swr
@@ -8181,6 +8249,7 @@ mips_block_move_straight (rtx dest, rtx src, HOST_WIDE_INT length)
 
   mode = int_mode_for_size (bits, 0).require ();
   delta = bits / BITS_PER_UNIT;
+    }
 
   /* Allocate a buffer for the temporary registers.  */
   regs = XALLOCAVEC (rtx, length / delta);
@@ -12951,6 +13020,19 @@ mips_hard_regno_mode_ok_uncached (unsigned int regno, machine_mode mode)
   size = GET_MODE_SIZE (mode);
   mclass = GET_MODE_CLASS (mode);
 
+  /* r5900 supports 128-bit vector modes in GPR's  */
+  if (GP_REG_P (regno)
+      && R5900_MMI_SUPPORTED_MODE_P(mode))
+    return true;
+
+  /* r5900 accumulator also supports double sized vector modes */
+  if (ACC_REG_P (regno)
+      && (R5900_MMI_SUPPORTED_MODE_P(mode)
+	  || mode == V4DImode
+	  || mode == V8SImode
+	  || mode == V16HImode))
+    return true;
+
   if (GP_REG_P (regno) && mode != CCFmode && !MSA_SUPPORTED_MODE_P (mode))
     return ((regno - GP_REG_FIRST) & 1) == 0 || size <= UNITS_PER_WORD;
 
@@ -13110,6 +13192,25 @@ mips_hard_regno_nregs (unsigned int regno, machine_mode mode)
       return (GET_MODE_SIZE (mode) + UNITS_PER_FPREG - 1) / UNITS_PER_FPREG;
     }
 
+  /* The R5900 supports 128-bit vector modes in its registers.  */
+  if (TARGET_MIPS5900)
+    {
+      if (GP_REG_P (regno)
+        && R5900_MMI_SUPPORTED_MODE_P(mode))
+      return 1;
+
+      if (ACC_REG_P (regno)
+        && R5900_MMI_SUPPORTED_MODE_P(mode))
+          return 1;
+
+      /* Double-sized vector modes for the hi/lo pair.  */
+      if (ACC_REG_P (regno)
+        && (mode == V4DImode
+	    || mode == V8SImode
+	    || mode == V16HImode))
+          return 2;
+    }
+
   /* All other registers are word-sized.  */
   return (GET_MODE_SIZE (mode) + UNITS_PER_WORD - 1) / UNITS_PER_WORD;
 }
@@ -13163,6 +13264,10 @@ mips_can_change_mode_class (machine_mode from,
 
   /* Allow conversions between different MSA vector modes.  */
   if (MSA_SUPPORTED_MODE_P (from) && MSA_SUPPORTED_MODE_P (to))
+    return true;
+
+  /* Allow conversions between different MMI vector modes.  */
+  if (R5900_MMI_SUPPORTED_MODE_P (from) && R5900_MMI_SUPPORTED_MODE_P(to))
     return true;
 
   /* Otherwise, there are several problems with changing the modes of
@@ -13549,6 +13654,14 @@ mips_vector_mode_supported_p (machine_mode mode)
     case E_V8QImode:
       return TARGET_LOONGSON_MMI;
 
+    case V4SImode:
+    case V8HImode:
+    case V16QImode:
+    case V4DImode:
+    case V8SImode:
+    case V16HImode:
+      return TARGET_MIPS5900 || MSA_SUPPORTED_MODE_P (mode);
+
     default:
       return MSA_SUPPORTED_MODE_P (mode);
     }
@@ -13575,9 +13688,8 @@ mips_preferred_simd_mode (scalar_mode mode)
       && mode == SFmode)
     return V2SFmode;
 
-  if (!ISA_HAS_MSA)
-    return word_mode;
-
+  if (ISA_HAS_MSA)
+  {
   switch (mode)
     {
     case E_QImode:
@@ -13598,6 +13710,23 @@ mips_preferred_simd_mode (scalar_mode mode)
     default:
       break;
     }
+  }
+
+  if (TARGET_MIPS5900)
+  {
+  switch (mode)
+    {
+    case E_QImode:
+      return V16QImode;
+    case E_HImode:
+      return V8HImode;
+    case E_SImode:
+      return V4SImode;
+    default:
+      break;
+    }
+  }
+
   return word_mode;
 }
 
@@ -13606,7 +13735,7 @@ mips_preferred_simd_mode (scalar_mode mode)
 static unsigned int
 mips_autovectorize_vector_modes (vector_modes *modes, bool)
 {
-  if (ISA_HAS_MSA)
+  if (ISA_HAS_MSA || TARGET_MIPS5900)
     modes->safe_push (V16QImode);
   return 0;
 }
@@ -13811,6 +13940,7 @@ mips_adjust_insn_length (rtx_insn *insn, int length)
 	length += NOP_INSN_LENGTH;
 	break;
 
+      case HAZARD_HILO01:
       case HAZARD_HILO:
 	length += NOP_INSN_LENGTH * 2;
 	break;
@@ -15427,6 +15557,7 @@ AVAIL_NON_MIPS16 (dsp_32, !TARGET_64BIT && TARGET_DSP)
 AVAIL_NON_MIPS16 (dsp_64, TARGET_64BIT && TARGET_DSP)
 AVAIL_NON_MIPS16 (dspr2_32, !TARGET_64BIT && TARGET_DSPR2)
 AVAIL_NON_MIPS16 (loongson, TARGET_LOONGSON_MMI)
+AVAIL_NON_MIPS16 (mmi, TARGET_MIPS5900)
 AVAIL_NON_MIPS16 (cache, TARGET_CACHE_BUILTIN)
 AVAIL_NON_MIPS16 (msa, TARGET_MSA)
 
@@ -15594,6 +15725,14 @@ AVAIL_NON_MIPS16 (msa, TARGET_MSA)
     "__builtin_msa_" #INSN,  MIPS_BUILTIN_DIRECT_NO_TARGET,		\
     FUNCTION_TYPE, mips_builtin_avail_msa, false }
 
+/* Define a MMI MIPS_BUILTIN_DIRECT function __builtin_mmi_<INSN>
+   for instruction CODE_FOR_mmi_<INSN>.  FUNCTION_TYPE is a
+   builtin_description field.  */
+#define MMI_DIRECT_BUILTIN(INSN, FUNCTION_TYPE)				\
+  { CODE_FOR_mmi_ ## INSN, MIPS_FP_COND_f,				\
+    "__builtin_mmi_" #INSN, MIPS_BUILTIN_DIRECT, FUNCTION_TYPE,		\
+    mips_builtin_avail_mmi }
+
 #define CODE_FOR_mips_sqrt_ps CODE_FOR_sqrtv2sf2
 #define CODE_FOR_mips_addq_ph CODE_FOR_addv2hi3
 #define CODE_FOR_mips_addu_qb CODE_FOR_addv4qi3
@@ -15634,24 +15773,24 @@ AVAIL_NON_MIPS16 (msa, TARGET_MSA)
 #define CODE_FOR_loongson_psubush CODE_FOR_ussubv4hi3
 #define CODE_FOR_loongson_psubusb CODE_FOR_ussubv8qi3
 
-#define CODE_FOR_msa_adds_s_b CODE_FOR_ssaddv16qi3
-#define CODE_FOR_msa_adds_s_h CODE_FOR_ssaddv8hi3
-#define CODE_FOR_msa_adds_s_w CODE_FOR_ssaddv4si3
-#define CODE_FOR_msa_adds_s_d CODE_FOR_ssaddv2di3
-#define CODE_FOR_msa_adds_u_b CODE_FOR_usaddv16qi3
-#define CODE_FOR_msa_adds_u_h CODE_FOR_usaddv8hi3
-#define CODE_FOR_msa_adds_u_w CODE_FOR_usaddv4si3
-#define CODE_FOR_msa_adds_u_d CODE_FOR_usaddv2di3
-#define CODE_FOR_msa_addv_b CODE_FOR_addv16qi3
-#define CODE_FOR_msa_addv_h CODE_FOR_addv8hi3
-#define CODE_FOR_msa_addv_w CODE_FOR_addv4si3
-#define CODE_FOR_msa_addv_d CODE_FOR_addv2di3
-#define CODE_FOR_msa_addvi_b CODE_FOR_addv16qi3
-#define CODE_FOR_msa_addvi_h CODE_FOR_addv8hi3
-#define CODE_FOR_msa_addvi_w CODE_FOR_addv4si3
-#define CODE_FOR_msa_addvi_d CODE_FOR_addv2di3
-#define CODE_FOR_msa_and_v CODE_FOR_andv16qi3
-#define CODE_FOR_msa_andi_b CODE_FOR_andv16qi3
+#define CODE_FOR_msa_adds_s_b CODE_FOR_ssaddv16qi3_msa
+#define CODE_FOR_msa_adds_s_h CODE_FOR_ssaddv8hi3_msa
+#define CODE_FOR_msa_adds_s_w CODE_FOR_ssaddv4si3_msa
+#define CODE_FOR_msa_adds_s_d CODE_FOR_ssaddv2di3_msa
+#define CODE_FOR_msa_adds_u_b CODE_FOR_usaddv16qi3_msa
+#define CODE_FOR_msa_adds_u_h CODE_FOR_usaddv8hi3_msa
+#define CODE_FOR_msa_adds_u_w CODE_FOR_usaddv4si3_msa
+#define CODE_FOR_msa_adds_u_d CODE_FOR_usaddv2di3_msa
+#define CODE_FOR_msa_addv_b CODE_FOR_addv16qi3_msa
+#define CODE_FOR_msa_addv_h CODE_FOR_addv8hi3_msa
+#define CODE_FOR_msa_addv_w CODE_FOR_addv4si3_msa
+#define CODE_FOR_msa_addv_d CODE_FOR_addv2di3_msa
+#define CODE_FOR_msa_addvi_b CODE_FOR_addv16qi3_msa
+#define CODE_FOR_msa_addvi_h CODE_FOR_addv8hi3_msa
+#define CODE_FOR_msa_addvi_w CODE_FOR_addv4si3_msa
+#define CODE_FOR_msa_addvi_d CODE_FOR_addv2di3_msa
+#define CODE_FOR_msa_and_v CODE_FOR_andv16qi3_msa
+#define CODE_FOR_msa_andi_b CODE_FOR_andv16qi3_msa
 #define CODE_FOR_msa_bmnz_v CODE_FOR_msa_bmnz_b
 #define CODE_FOR_msa_bmnzi_b CODE_FOR_msa_bmnz_b
 #define CODE_FOR_msa_bmz_v CODE_FOR_msa_bmz_b
@@ -15715,14 +15854,14 @@ AVAIL_NON_MIPS16 (msa, TARGET_MSA)
 #define CODE_FOR_msa_fmin_d CODE_FOR_sminv2df3
 #define CODE_FOR_msa_fsqrt_w CODE_FOR_sqrtv4sf2
 #define CODE_FOR_msa_fsqrt_d CODE_FOR_sqrtv2df2
-#define CODE_FOR_msa_max_s_b CODE_FOR_smaxv16qi3
-#define CODE_FOR_msa_max_s_h CODE_FOR_smaxv8hi3
-#define CODE_FOR_msa_max_s_w CODE_FOR_smaxv4si3
-#define CODE_FOR_msa_max_s_d CODE_FOR_smaxv2di3
-#define CODE_FOR_msa_maxi_s_b CODE_FOR_smaxv16qi3
-#define CODE_FOR_msa_maxi_s_h CODE_FOR_smaxv8hi3
-#define CODE_FOR_msa_maxi_s_w CODE_FOR_smaxv4si3
-#define CODE_FOR_msa_maxi_s_d CODE_FOR_smaxv2di3
+#define CODE_FOR_msa_max_s_b CODE_FOR_smaxv16qi3_msa
+#define CODE_FOR_msa_max_s_h CODE_FOR_smaxv8hi3_msa
+#define CODE_FOR_msa_max_s_w CODE_FOR_smaxv4si3_msa
+#define CODE_FOR_msa_max_s_d CODE_FOR_smaxv2di3_msa
+#define CODE_FOR_msa_maxi_s_b CODE_FOR_smaxv16qi3_msa
+#define CODE_FOR_msa_maxi_s_h CODE_FOR_smaxv8hi3_msa
+#define CODE_FOR_msa_maxi_s_w CODE_FOR_smaxv4si3_msa
+#define CODE_FOR_msa_maxi_s_d CODE_FOR_smaxv2di3_msa
 #define CODE_FOR_msa_max_u_b CODE_FOR_umaxv16qi3
 #define CODE_FOR_msa_max_u_h CODE_FOR_umaxv8hi3
 #define CODE_FOR_msa_max_u_w CODE_FOR_umaxv4si3
@@ -15731,14 +15870,14 @@ AVAIL_NON_MIPS16 (msa, TARGET_MSA)
 #define CODE_FOR_msa_maxi_u_h CODE_FOR_umaxv8hi3
 #define CODE_FOR_msa_maxi_u_w CODE_FOR_umaxv4si3
 #define CODE_FOR_msa_maxi_u_d CODE_FOR_umaxv2di3
-#define CODE_FOR_msa_min_s_b CODE_FOR_sminv16qi3
-#define CODE_FOR_msa_min_s_h CODE_FOR_sminv8hi3
-#define CODE_FOR_msa_min_s_w CODE_FOR_sminv4si3
-#define CODE_FOR_msa_min_s_d CODE_FOR_sminv2di3
-#define CODE_FOR_msa_mini_s_b CODE_FOR_sminv16qi3
-#define CODE_FOR_msa_mini_s_h CODE_FOR_sminv8hi3
-#define CODE_FOR_msa_mini_s_w CODE_FOR_sminv4si3
-#define CODE_FOR_msa_mini_s_d CODE_FOR_sminv2di3
+#define CODE_FOR_msa_min_s_b CODE_FOR_sminv16qi3_msa
+#define CODE_FOR_msa_min_s_h CODE_FOR_sminv8hi3_msa
+#define CODE_FOR_msa_min_s_w CODE_FOR_sminv4si3_msa
+#define CODE_FOR_msa_min_s_d CODE_FOR_sminv2di3_msa
+#define CODE_FOR_msa_mini_s_b CODE_FOR_sminv16qi3_msa
+#define CODE_FOR_msa_mini_s_h CODE_FOR_sminv8hi3_msa
+#define CODE_FOR_msa_mini_s_w CODE_FOR_sminv4si3_msa
+#define CODE_FOR_msa_mini_s_d CODE_FOR_sminv2di3_msa
 #define CODE_FOR_msa_min_u_b CODE_FOR_uminv16qi3
 #define CODE_FOR_msa_min_u_h CODE_FOR_uminv8hi3
 #define CODE_FOR_msa_min_u_w CODE_FOR_uminv4si3
@@ -15763,17 +15902,17 @@ AVAIL_NON_MIPS16 (msa, TARGET_MSA)
 #define CODE_FOR_msa_mod_u_h CODE_FOR_umodv8hi3
 #define CODE_FOR_msa_mod_u_w CODE_FOR_umodv4si3
 #define CODE_FOR_msa_mod_u_d CODE_FOR_umodv2di3
-#define CODE_FOR_msa_mulv_b CODE_FOR_mulv16qi3
-#define CODE_FOR_msa_mulv_h CODE_FOR_mulv8hi3
-#define CODE_FOR_msa_mulv_w CODE_FOR_mulv4si3
-#define CODE_FOR_msa_mulv_d CODE_FOR_mulv2di3
+#define CODE_FOR_msa_mulv_b CODE_FOR_mulv16qi3_msa
+#define CODE_FOR_msa_mulv_h CODE_FOR_mulv8hi3_msa
+#define CODE_FOR_msa_mulv_w CODE_FOR_mulv4si3_msa
+#define CODE_FOR_msa_mulv_d CODE_FOR_mulv2di3_msa
 #define CODE_FOR_msa_nlzc_b CODE_FOR_clzv16qi2
 #define CODE_FOR_msa_nlzc_h CODE_FOR_clzv8hi2
 #define CODE_FOR_msa_nlzc_w CODE_FOR_clzv4si2
 #define CODE_FOR_msa_nlzc_d CODE_FOR_clzv2di2
 #define CODE_FOR_msa_nor_v CODE_FOR_msa_nor_b
-#define CODE_FOR_msa_or_v CODE_FOR_iorv16qi3
-#define CODE_FOR_msa_ori_b CODE_FOR_iorv16qi3
+#define CODE_FOR_msa_or_v CODE_FOR_iorv16qi3_msa
+#define CODE_FOR_msa_ori_b CODE_FOR_iorv16qi3_msa
 #define CODE_FOR_msa_nori_b CODE_FOR_msa_nor_b
 #define CODE_FOR_msa_pcnt_b CODE_FOR_popcountv16qi2
 #define CODE_FOR_msa_pcnt_h CODE_FOR_popcountv8hi2
@@ -15781,38 +15920,38 @@ AVAIL_NON_MIPS16 (msa, TARGET_MSA)
 #define CODE_FOR_msa_pcnt_d CODE_FOR_popcountv2di2
 #define CODE_FOR_msa_xor_v CODE_FOR_xorv16qi3
 #define CODE_FOR_msa_xori_b CODE_FOR_xorv16qi3
-#define CODE_FOR_msa_sll_b CODE_FOR_vashlv16qi3
-#define CODE_FOR_msa_sll_h CODE_FOR_vashlv8hi3
-#define CODE_FOR_msa_sll_w CODE_FOR_vashlv4si3
-#define CODE_FOR_msa_sll_d CODE_FOR_vashlv2di3
-#define CODE_FOR_msa_slli_b CODE_FOR_vashlv16qi3
-#define CODE_FOR_msa_slli_h CODE_FOR_vashlv8hi3
-#define CODE_FOR_msa_slli_w CODE_FOR_vashlv4si3
-#define CODE_FOR_msa_slli_d CODE_FOR_vashlv2di3
-#define CODE_FOR_msa_sra_b CODE_FOR_vashrv16qi3
-#define CODE_FOR_msa_sra_h CODE_FOR_vashrv8hi3
-#define CODE_FOR_msa_sra_w CODE_FOR_vashrv4si3
-#define CODE_FOR_msa_sra_d CODE_FOR_vashrv2di3
-#define CODE_FOR_msa_srai_b CODE_FOR_vashrv16qi3
-#define CODE_FOR_msa_srai_h CODE_FOR_vashrv8hi3
-#define CODE_FOR_msa_srai_w CODE_FOR_vashrv4si3
-#define CODE_FOR_msa_srai_d CODE_FOR_vashrv2di3
-#define CODE_FOR_msa_srl_b CODE_FOR_vlshrv16qi3
-#define CODE_FOR_msa_srl_h CODE_FOR_vlshrv8hi3
-#define CODE_FOR_msa_srl_w CODE_FOR_vlshrv4si3
-#define CODE_FOR_msa_srl_d CODE_FOR_vlshrv2di3
-#define CODE_FOR_msa_srli_b CODE_FOR_vlshrv16qi3
-#define CODE_FOR_msa_srli_h CODE_FOR_vlshrv8hi3
-#define CODE_FOR_msa_srli_w CODE_FOR_vlshrv4si3
-#define CODE_FOR_msa_srli_d CODE_FOR_vlshrv2di3
-#define CODE_FOR_msa_subv_b CODE_FOR_subv16qi3
-#define CODE_FOR_msa_subv_h CODE_FOR_subv8hi3
-#define CODE_FOR_msa_subv_w CODE_FOR_subv4si3
-#define CODE_FOR_msa_subv_d CODE_FOR_subv2di3
-#define CODE_FOR_msa_subvi_b CODE_FOR_subv16qi3
-#define CODE_FOR_msa_subvi_h CODE_FOR_subv8hi3
-#define CODE_FOR_msa_subvi_w CODE_FOR_subv4si3
-#define CODE_FOR_msa_subvi_d CODE_FOR_subv2di3
+#define CODE_FOR_msa_sll_b CODE_FOR_vashlv16qi3_msa
+#define CODE_FOR_msa_sll_h CODE_FOR_vashlv8hi3_msa
+#define CODE_FOR_msa_sll_w CODE_FOR_vashlv4si3_msa
+#define CODE_FOR_msa_sll_d CODE_FOR_vashlv2di3_msa
+#define CODE_FOR_msa_slli_b CODE_FOR_vashlv16qi3_msa
+#define CODE_FOR_msa_slli_h CODE_FOR_vashlv8hi3_msa
+#define CODE_FOR_msa_slli_w CODE_FOR_vashlv4si3_msa
+#define CODE_FOR_msa_slli_d CODE_FOR_vashlv2di3_msa
+#define CODE_FOR_msa_sra_b CODE_FOR_vashrv16qi3_msa
+#define CODE_FOR_msa_sra_h CODE_FOR_vashrv8hi3_msa
+#define CODE_FOR_msa_sra_w CODE_FOR_vashrv4si3_msa
+#define CODE_FOR_msa_sra_d CODE_FOR_vashrv2di3_msa
+#define CODE_FOR_msa_srai_b CODE_FOR_vashrv16qi3_msa
+#define CODE_FOR_msa_srai_h CODE_FOR_vashrv8hi3_msa
+#define CODE_FOR_msa_srai_w CODE_FOR_vashrv4si3_msa
+#define CODE_FOR_msa_srai_d CODE_FOR_vashrv2di3_msa
+#define CODE_FOR_msa_srl_b CODE_FOR_vlshrv16qi3_msa
+#define CODE_FOR_msa_srl_h CODE_FOR_vlshrv8hi3_msa
+#define CODE_FOR_msa_srl_w CODE_FOR_vlshrv4si3_msa
+#define CODE_FOR_msa_srl_d CODE_FOR_vlshrv2di3_msa
+#define CODE_FOR_msa_srli_b CODE_FOR_vlshrv16qi3_msa
+#define CODE_FOR_msa_srli_h CODE_FOR_vlshrv8hi3_msa
+#define CODE_FOR_msa_srli_w CODE_FOR_vlshrv4si3_msa
+#define CODE_FOR_msa_srli_d CODE_FOR_vlshrv2di3_msa
+#define CODE_FOR_msa_subv_b CODE_FOR_subv16qi3_msa
+#define CODE_FOR_msa_subv_h CODE_FOR_subv8hi3_msa
+#define CODE_FOR_msa_subv_w CODE_FOR_subv4si3_msa
+#define CODE_FOR_msa_subv_d CODE_FOR_subv2di3_msa
+#define CODE_FOR_msa_subvi_b CODE_FOR_subv16qi3_msa
+#define CODE_FOR_msa_subvi_h CODE_FOR_subv8hi3_msa
+#define CODE_FOR_msa_subvi_w CODE_FOR_subv4si3_msa
+#define CODE_FOR_msa_subvi_d CODE_FOR_subv2di3_msa
 
 #define CODE_FOR_msa_move_v CODE_FOR_movv16qi
 
@@ -15830,6 +15969,32 @@ AVAIL_NON_MIPS16 (msa, TARGET_MSA)
 #define CODE_FOR_msa_ldi_h CODE_FOR_msa_ldiv8hi
 #define CODE_FOR_msa_ldi_w CODE_FOR_msa_ldiv4si
 #define CODE_FOR_msa_ldi_d CODE_FOR_msa_ldiv2di
+
+#define CODE_FOR_mmi_paddb CODE_FOR_addv16qi3
+#define CODE_FOR_mmi_psubb CODE_FOR_subv16qi3
+#define CODE_FOR_mmi_paddh CODE_FOR_addv8hi3
+#define CODE_FOR_mmi_psubh CODE_FOR_subv8hi3
+#define CODE_FOR_mmi_paddw CODE_FOR_addv4si3
+#define CODE_FOR_mmi_psubw CODE_FOR_subv4si3
+#define CODE_FOR_mmi_paddsb CODE_FOR_ssaddv16qi3
+#define CODE_FOR_mmi_psubsb CODE_FOR_sssubv16qi3
+#define CODE_FOR_mmi_paddsh CODE_FOR_ssaddv8hi3
+#define CODE_FOR_mmi_psubsh CODE_FOR_sssubv8hi3
+#define CODE_FOR_mmi_paddsw CODE_FOR_ssaddv4si3
+#define CODE_FOR_mmi_psubsw CODE_FOR_sssubv4si3
+#define CODE_FOR_mmi_paddub CODE_FOR_usaddv16qi3
+#define CODE_FOR_mmi_psubub CODE_FOR_ussubv16qi3
+#define CODE_FOR_mmi_padduh CODE_FOR_usaddv8hi3
+#define CODE_FOR_mmi_psubuh CODE_FOR_ussubv8hi3
+#define CODE_FOR_mmi_padduw CODE_FOR_usaddv4si3
+#define CODE_FOR_mmi_psubuw CODE_FOR_ussubv4si3
+
+#define CODE_FOR_mmi_psrah CODE_FOR_vashrv8hi3
+#define CODE_FOR_mmi_psraw CODE_FOR_vashrv4si3
+#define CODE_FOR_mmi_psrlh CODE_FOR_vlshrv8hi3
+#define CODE_FOR_mmi_psrlw CODE_FOR_vlshrv4si3
+#define CODE_FOR_mmi_psllh CODE_FOR_vashlv8hi3
+#define CODE_FOR_mmi_psllw CODE_FOR_vashlv4si3
 
 static const struct mips_builtin_description mips_builtins[] = {
 #define MIPS_GET_FCSR 0
@@ -16117,6 +16282,33 @@ static const struct mips_builtin_description mips_builtins[] = {
   LOONGSON_BUILTIN_SUFFIX (punpcklbh, s, MIPS_V8QI_FTYPE_V8QI_V8QI),
   LOONGSON_BUILTIN_SUFFIX (punpcklhw, s, MIPS_V4HI_FTYPE_V4HI_V4HI),
   LOONGSON_BUILTIN_SUFFIX (punpcklwd, s, MIPS_V2SI_FTYPE_V2SI_V2SI),
+
+  /* The following are for the MIPS R5900 MMI.  */
+  MMI_DIRECT_BUILTIN (paddb, MIPS_UV16QI_FTYPE_UV16QI_UV16QI),
+  MMI_DIRECT_BUILTIN (psubb, MIPS_UV16QI_FTYPE_UV16QI_UV16QI),
+  MMI_DIRECT_BUILTIN (paddh, MIPS_UV8HI_FTYPE_UV8HI_UV8HI),
+  MMI_DIRECT_BUILTIN (psubh, MIPS_UV8HI_FTYPE_UV8HI_UV8HI),
+  MMI_DIRECT_BUILTIN (paddw, MIPS_UV4SI_FTYPE_UV4SI_UV4SI),
+  MMI_DIRECT_BUILTIN (psubw, MIPS_UV4SI_FTYPE_UV4SI_UV4SI),
+  MMI_DIRECT_BUILTIN (paddsb, MIPS_V16QI_FTYPE_V16QI_V16QI),
+  MMI_DIRECT_BUILTIN (psubsb, MIPS_V16QI_FTYPE_V16QI_V16QI),
+  MMI_DIRECT_BUILTIN (paddsh, MIPS_V8HI_FTYPE_V8HI_V8HI),
+  MMI_DIRECT_BUILTIN (psubsh, MIPS_V8HI_FTYPE_V8HI_V8HI),
+  MMI_DIRECT_BUILTIN (paddsw, MIPS_V4SI_FTYPE_V4SI_V4SI),
+  MMI_DIRECT_BUILTIN (psubsw, MIPS_V4SI_FTYPE_V4SI_V4SI),
+  MMI_DIRECT_BUILTIN (paddub, MIPS_UV16QI_FTYPE_UV16QI_UV16QI),
+  MMI_DIRECT_BUILTIN (psubub, MIPS_UV16QI_FTYPE_UV16QI_UV16QI),
+  MMI_DIRECT_BUILTIN (padduh, MIPS_UV8HI_FTYPE_UV8HI_UV8HI),
+  MMI_DIRECT_BUILTIN (psubuh, MIPS_UV8HI_FTYPE_UV8HI_UV8HI),
+  MMI_DIRECT_BUILTIN (padduw, MIPS_UV4SI_FTYPE_UV4SI_UV4SI),
+  MMI_DIRECT_BUILTIN (psubuw, MIPS_UV4SI_FTYPE_UV4SI_UV4SI),
+
+  MMI_DIRECT_BUILTIN (psrah, MIPS_V8HI_FTYPE_V8HI_SI),
+  MMI_DIRECT_BUILTIN (psraw, MIPS_V4SI_FTYPE_V4SI_SI),
+  MMI_DIRECT_BUILTIN (psrlh, MIPS_V8HI_FTYPE_V8HI_SI),
+  MMI_DIRECT_BUILTIN (psrlw, MIPS_V4SI_FTYPE_V4SI_SI),
+  MMI_DIRECT_BUILTIN (psllh, MIPS_V8HI_FTYPE_V8HI_SI),
+  MMI_DIRECT_BUILTIN (psllw, MIPS_V4SI_FTYPE_V4SI_SI),
 
   /* Sundry other built-in functions.  */
   DIRECT_NO_TARGET_BUILTIN (cache, MIPS_VOID_FTYPE_SI_CVPOINTER, cache),
@@ -19081,6 +19273,10 @@ mips_avoid_hazard (rtx_insn *after, rtx_insn *insn, int *hilo_delay,
 	break;
 
       case HAZARD_HILO:
+	*hilo_delay = 0;
+	break;
+
+      case HAZARD_HILO01:
 	*hilo_delay = 0;
 	break;
 
@@ -22222,19 +22418,19 @@ mips_expand_vector_init (rtx target, rtx vals)
 	      switch (vmode)
 		{
 		case E_V16QImode:
-		  emit_insn (gen_vec_setv16qi (target, temp, GEN_INT (i)));
+		  emit_insn (gen_vec_setv16qi_msa (target, temp, GEN_INT (i)));
 		  break;
 
 		case E_V8HImode:
-		  emit_insn (gen_vec_setv8hi (target, temp, GEN_INT (i)));
+		  emit_insn (gen_vec_setv8hi_msa (target, temp, GEN_INT (i)));
 		  break;
 
 		case E_V4SImode:
-		  emit_insn (gen_vec_setv4si (target, temp, GEN_INT (i)));
+		  emit_insn (gen_vec_setv4si_msa (target, temp, GEN_INT (i)));
 		  break;
 
 		case E_V2DImode:
-		  emit_insn (gen_vec_setv2di (target, temp, GEN_INT (i)));
+		  emit_insn (gen_vec_setv2di_msa (target, temp, GEN_INT (i)));
 		  break;
 
 		case E_V4SFmode:
@@ -22270,8 +22466,8 @@ mips_expand_vector_init (rtx target, rtx vals)
       return;
     }
 
-  /* Loongson is the only cpu with vectors with more elements.  */
-  gcc_assert (TARGET_HARD_FLOAT && TARGET_LOONGSON_MMI);
+  /* The R5900 and Loongson are the only CPUs with vectors containing more elements.  */
+  gcc_assert ((TARGET_HARD_FLOAT && TARGET_LOONGSON_MMI) || TARGET_MIPS5900);
 
   /* If all values are identical, broadcast the value.  */
   if (all_same)
@@ -22280,8 +22476,8 @@ mips_expand_vector_init (rtx target, rtx vals)
       return;
     }
 
-  /* If we've only got one non-variable V4HImode, use PINSRH.  */
-  if (nvar == 1 && vmode == V4HImode)
+  /* Loongson: if we've only got one non-variable V4HImode, use PINSRH.  */
+  if (TARGET_LOONGSON_MMI && (nvar == 1 && vmode == V4HImode))
     {
       mips_expand_vi_loongson_one_pinsrh (target, vals, one_var);
       return;
