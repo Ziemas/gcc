@@ -5164,6 +5164,7 @@ mips_output_move (rtx dest, rtx src)
   machine_mode mode = GET_MODE (dest);
   bool dbl_p = (GET_MODE_SIZE (mode) == 8);
   bool msa_p = MSA_SUPPORTED_MODE_P (mode);
+  bool mmi_p = R5900_MMI_SUPPORTED_MODE_P (mode);
   enum mips_symbol_type symbol_type;
 
   if (mips_split_move_p (dest, src, SPLIT_IF_NECESSARY))
@@ -5183,6 +5184,9 @@ mips_output_move (rtx dest, rtx src)
     {
       if (dest_code == REG)
 	{
+	  if (GP_REG_P (REGNO (dest)) && mmi_p)
+	    return "por\t%0,%z1,$0";
+
 	  if (GP_REG_P (REGNO (dest)))
 	    return "move\t%0,%z1";
 
