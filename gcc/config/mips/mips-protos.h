@@ -217,6 +217,8 @@ extern bool mips_split_move_p (rtx, rtx, enum mips_split_type);
 extern void mips_split_move (rtx, rtx, enum mips_split_type, rtx);
 extern bool mips_split_move_insn_p (rtx, rtx, rtx);
 extern void mips_split_move_insn (rtx, rtx, rtx);
+extern void mips_split_mmi_move (rtx, rtx);
+extern bool mips_split_mmi_move_p (rtx, rtx);
 extern void mips_split_128bit_move (rtx, rtx);
 extern bool mips_split_128bit_move_p (rtx, rtx);
 extern void mips_split_msa_copy_d (rtx, rtx, rtx, rtx (*)(rtx, rtx, rtx));

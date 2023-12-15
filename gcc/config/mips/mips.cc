@@ -4751,48 +4751,6 @@ mips_mult_move_p (rtx dest, rtx src, enum mips_split_type split_type)
 	      : MD_REG_P (REGNO (dest))));
 }
 
-/* Check if 128bit MMI move needs to be split */
-
-bool
-mips_split_mmi_move_p (rtx dest, rtx src)
-{
-  /* Check r5900 MMI destinations.  */
-  if (GP_REG_P (REGNO (dest)))
-    {
-      /* Check for LQ loads.  */
-      if (MEM_P (src))
-        return false;
-      /* Check for LO register.  */
-      if (REGNO (src) == LO_REGNUM)
-        return false;
-      /* Check for HI register.  */
-      if (REGNO (src) == HI_REGNUM)
-        return false;
-      /* GPR-to-GPR moves can be done in a single instruction.  */
-      if (GP_REG_P (REGNO (src)))
-        return false;
-    }
-
- /* Check r5900 MMI sources.  */
-  if (GP_REG_P (REGNO (src)))
-    {
-      /* Check for SQ loads.  */
-      if (MEM_P (dest))
-        return false;
-      /* Check for LO register.  */
-      if (REGNO (dest) == LO_REGNUM)
-        return false;
-      /* Check for HI register.  */
-      if (REGNO (dest) == HI_REGNUM)
-        return false;
-      /* GPR-to-GPR moves can be done in a single instruction.  */
-      if (GP_REG_P (REGNO (dest)))
-        return false;
-    }
-
-  return true;
-}
-
 /* Return true if a move from SRC to DEST should be split into two.
    SPLIT_TYPE describes the split condition.  */
 
@@ -4824,7 +4782,7 @@ mips_split_move_p (rtx dest, rtx src, enum mips_split_type split_type)
 
   if (R5900_MMI_SUPPORTED_MODE_P (GET_MODE (dest))
       || R5900_MMI_SUPPORTED_MODE_P (GET_MODE (src)))
-    return mips_split_mmi_move_p(src, dest);
+    return mips_split_mmi_move_p(dest, src);
 
   /* Otherwise split all multiword moves.  */
   return size > UNITS_PER_WORD;
@@ -4842,8 +4800,8 @@ mips_split_move (rtx dest, rtx src, enum mips_split_type split_type, rtx insn_)
   gcc_checking_assert (mips_split_move_p (dest, src, split_type));
   if (MSA_SUPPORTED_MODE_P (GET_MODE (dest)))
     mips_split_128bit_move (dest, src);
-//  else if (R5900_MMI_SUPPORTED_MODE_P (GET_MODE (dest)))
-//    // TODO!
+  else if (R5900_MMI_SUPPORTED_MODE_P (GET_MODE (dest)))
+    internal_error("r5900 mmi split move"); // TODO Do we ever need this?
   else if (FP_REG_RTX_P (dest) || FP_REG_RTX_P (src))
     {
       if (!TARGET_64BIT && GET_MODE (dest) == DImode)
@@ -4941,6 +4899,63 @@ mips_insn_split_type (rtx insn)
   /* Once CFG information has been removed, we should trust the optimization
      decisions made by previous passes and only split where necessary.  */
   return SPLIT_IF_NECESSARY;
+}
+
+/* Check if 128bit MMI move needs to be split */
+
+bool
+mips_split_mmi_move_p (rtx dest, rtx src)
+{
+
+  if (MEM_P (dest))
+    {
+      if (src == CONST0_RTX (GET_MODE (src)))
+	return false;
+    }
+
+  /* Check r5900 MMI destinations.  */
+  if (GP_REG_P (REGNO (dest)))
+    {
+      /* Check for LQ loads.  */
+      if (MEM_P (src))
+        return false;
+      /* Check for LO register.  */
+      if (REGNO (src) == LO_REGNUM)
+        return false;
+      /* Check for HI register.  */
+      if (REGNO (src) == HI_REGNUM)
+        return false;
+      /* Const 0 vector load */
+      if (src == CONST0_RTX (GET_MODE (src)))
+	return false;
+      ///* All elements 0 */
+      //if (GET_CODE (src) == CONST_VECTOR
+      //    && CONST_INT_P (CONST_VECTOR_ELT (src, 0))
+      //    && mips_const_vector_same_int_p (src, GET_MODE (src), 0, 0))
+      //  return false;
+      /* GPR-to-GPR moves can be done in a single instruction.  */
+      if (GP_REG_P (REGNO (src)))
+        return false;
+    }
+
+ /* Check r5900 MMI sources.  */
+  if (GP_REG_P (REGNO (src)))
+    {
+      /* Check for SQ loads.  */
+      if (MEM_P (dest))
+        return false;
+      /* Check for LO register.  */
+      if (REGNO (dest) == LO_REGNUM)
+        return false;
+      /* Check for HI register.  */
+      if (REGNO (dest) == HI_REGNUM)
+        return false;
+      /* GPR-to-GPR moves can be done in a single instruction.  */
+      if (GP_REG_P (REGNO (dest)))
+        return false;
+    }
+
+  return true;
 }
 
 /* Return true if a 128-bit move from SRC to DEST should be split.  */
