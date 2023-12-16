@@ -16018,12 +16018,12 @@ AVAIL_NON_MIPS16 (msa, TARGET_MSA)
 #define CODE_FOR_mmi_padduw CODE_FOR_usaddv4si3
 #define CODE_FOR_mmi_psubuw CODE_FOR_ussubv4si3
 
-#define CODE_FOR_mmi_psrah CODE_FOR_vashrv8hi3
-#define CODE_FOR_mmi_psraw CODE_FOR_vashrv4si3
-#define CODE_FOR_mmi_psrlh CODE_FOR_vlshrv8hi3
-#define CODE_FOR_mmi_psrlw CODE_FOR_vlshrv4si3
-#define CODE_FOR_mmi_psllh CODE_FOR_vashlv8hi3
-#define CODE_FOR_mmi_psllw CODE_FOR_vashlv4si3
+//#define CODE_FOR_mmi_psrah CODE_FOR_vashrv8hi3
+//#define CODE_FOR_mmi_psraw CODE_FOR_vashrv4si3
+//#define CODE_FOR_mmi_psrlh CODE_FOR_vlshrv8hi3
+//#define CODE_FOR_mmi_psrlw CODE_FOR_vlshrv4si3
+//#define CODE_FOR_mmi_psllh CODE_FOR_vashlv8hi3
+//#define CODE_FOR_mmi_psllw CODE_FOR_vashlv4si3
 
 static const struct mips_builtin_description mips_builtins[] = {
 #define MIPS_GET_FCSR 0
@@ -16332,12 +16332,12 @@ static const struct mips_builtin_description mips_builtins[] = {
   MMI_DIRECT_BUILTIN (padduw, MIPS_UV4SI_FTYPE_UV4SI_UV4SI),
   MMI_DIRECT_BUILTIN (psubuw, MIPS_UV4SI_FTYPE_UV4SI_UV4SI),
 
-  MMI_DIRECT_BUILTIN (psrah, MIPS_V8HI_FTYPE_V8HI_SI),
-  MMI_DIRECT_BUILTIN (psraw, MIPS_V4SI_FTYPE_V4SI_SI),
-  MMI_DIRECT_BUILTIN (psrlh, MIPS_V8HI_FTYPE_V8HI_SI),
-  MMI_DIRECT_BUILTIN (psrlw, MIPS_V4SI_FTYPE_V4SI_SI),
-  MMI_DIRECT_BUILTIN (psllh, MIPS_V8HI_FTYPE_V8HI_SI),
-  MMI_DIRECT_BUILTIN (psllw, MIPS_V4SI_FTYPE_V4SI_SI),
+  //MMI_DIRECT_BUILTIN (psrah, MIPS_V8HI_FTYPE_V8HI_SI),
+  //MMI_DIRECT_BUILTIN (psraw, MIPS_V4SI_FTYPE_V4SI_SI),
+  //MMI_DIRECT_BUILTIN (psrlh, MIPS_V8HI_FTYPE_V8HI_SI),
+  //MMI_DIRECT_BUILTIN (psrlw, MIPS_V4SI_FTYPE_V4SI_SI),
+  //MMI_DIRECT_BUILTIN (psllh, MIPS_V8HI_FTYPE_V8HI_SI),
+  //MMI_DIRECT_BUILTIN (psllw, MIPS_V4SI_FTYPE_V4SI_SI),
 
   /* Sundry other built-in functions.  */
   DIRECT_NO_TARGET_BUILTIN (cache, MIPS_VOID_FTYPE_SI_CVPOINTER, cache),
